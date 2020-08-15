@@ -1,6 +1,7 @@
 use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect};
 use std::ffi::c_void;
 use std::ptr;
+use std::thread;
 
 const NO_ALPHA: dispmanx::VCAlpha = dispmanx::VCAlpha { flags: dispmanx::FlagsAlpha::FIXED_ALL_PIXELS, opacity: 255, mask: 0 };
 
@@ -30,6 +31,17 @@ pub struct Display {
     handle: dispmanx::DisplayHandle
 }
 
+pub struct VSyncData<'t> {
+    pub draw_thread: &'t thread::Thread
+}
+
+extern "C" fn vsync_callback(_: dispmanx::UpdateHandle, arg: *mut c_void) {
+    let data: &mut VSyncData = unsafe { &mut *(arg as *mut VSyncData) };
+    data.draw_thread.unpark();
+}
+
+extern "C" fn null_callback(_: dispmanx::UpdateHandle, _: *mut c_void) { }
+
 impl<'d> Display {
     pub fn init(display: u32) -> Self {
         bcm_host::init();
@@ -48,6 +60,14 @@ impl<'d> Display {
             handle: update_handle
         }
     }
+
+    pub fn start_vsync_handler(&self, vsync_data: &mut VSyncData) {
+        dispmanx::vsync_callback(self.handle, vsync_callback, vsync_data as *mut _ as *mut c_void);
+    }
+}
+
+pub struct Element {
+    handle: dispmanx::ElementHandle
 }
 
 pub struct Update<'d> {
@@ -56,14 +76,23 @@ pub struct Update<'d> {
 }
 
 impl<'d> Update<'d> {
-    pub fn add_element_from_image(&'d self, layer: i32, dest_rect: Rect, image_resource: ImageResource) {
+    pub fn create_element_from_image_resource(&'d self, layer: i32, dest_rect: Rect, image_resource: &ImageResource) -> Element {
         let mut dest_rect_vc = rect_to_vc_rect(dest_rect);
         let mut src_rect_vc = rect_to_vc_rect(image_resource.image.get_src_rect());
-        dispmanx::element_add(self.handle, self.display.handle, layer, &mut dest_rect_vc, image_resource.resource, &mut src_rect_vc, dispmanx::DISPMANX_PROTECTION_NONE, &mut NO_ALPHA, ptr::null_mut(), dispmanx::Transform::NO_ROTATE);
+        let handle = dispmanx::element_add(self.handle, self.display.handle, layer, &mut dest_rect_vc, image_resource.resource, &mut src_rect_vc, dispmanx::DISPMANX_PROTECTION_NONE, &mut NO_ALPHA, ptr::null_mut(), dispmanx::Transform::NO_ROTATE);
+        Element { handle: handle }
+    }
+
+    pub fn replace_element_source(&'d self, element: &Element, image_resource: &ImageResource) {
+        dispmanx::element_change_source(self.handle, element.handle, image_resource.resource);
     }
 
     pub fn submit_sync(&self) {
         dispmanx::update_submit_sync(self.handle);
+    }
+
+    pub fn submit(&self) {
+        dispmanx::update_submit(self.handle, null_callback, ptr::null_mut());
     }
 }
 
@@ -151,13 +180,13 @@ impl Image {
     }
 }
 
-pub struct ImageResource<'a> {
-    pub image: &'a mut Image,
+pub struct ImageResource {
+    pub image: Image,
     pub resource: dispmanx::ResourceHandle
 }
 
-impl<'a> ImageResource<'a> {
-    pub fn for_image(image: &'a mut Image) -> Self {
+impl<'a> ImageResource {
+    pub fn from_image(image: Image) -> Self {
         let mut _ptr: u32 = 0;
         let resource = dispmanx::resource_create(image_type_to_vc_image_type(image.image_type), (image.width | (image.pitch << 16)) as u32, (image.height | (image.aligned_height << 16)) as u32, &mut _ptr);
 
