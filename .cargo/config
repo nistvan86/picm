@@ -1,0 +1,8 @@
+[build]
+target = "arm-unknown-linux-gnueabihf"
+
+[target.arm-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+
+[dependencies]
+rust-videocore = { git = "https://github.com/ionosnetworks/rust-videocore" } 

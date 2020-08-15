@@ -1,0 +1,179 @@
+use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect};
+use std::ffi::c_void;
+use std::ptr;
+
+const NO_ALPHA: dispmanx::VCAlpha = dispmanx::VCAlpha { flags: dispmanx::FlagsAlpha::FIXED_ALL_PIXELS, opacity: 255, mask: 0 };
+
+#[derive(Copy, Clone)]
+pub enum ImageType {
+    _8BPP
+}
+
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32
+}
+
+fn rect_to_vc_rect(rect: Rect) -> VCRect {
+    VCRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+}
+
+fn image_type_to_vc_image_type(image_type: ImageType) -> VCImageType {
+    match image_type {
+        ImageType::_8BPP => VCImageType::_8BPP
+    }
+}
+
+pub struct Display {
+    handle: dispmanx::DisplayHandle
+}
+
+impl<'d> Display {
+    pub fn init(display: u32) -> Self {
+        bcm_host::init();
+        let disp_handle = dispmanx::display_open(display);
+
+        Display {
+            handle: disp_handle
+        }
+    }
+
+    pub fn start_update(&'d self, priority: i32) -> Update<'d> {
+        let update_handle = dispmanx::update_start(priority);
+
+        Update {
+            display: self,
+            handle: update_handle
+        }
+    }
+}
+
+pub struct Update<'d> {
+    display: &'d Display,
+    handle: dispmanx::UpdateHandle
+}
+
+impl<'d> Update<'d> {
+    pub fn add_element_from_image(&'d self, layer: i32, dest_rect: Rect, image_resource: ImageResource) {
+        let mut dest_rect_vc = rect_to_vc_rect(dest_rect);
+        let mut src_rect_vc = rect_to_vc_rect(image_resource.image.get_src_rect());
+        dispmanx::element_add(self.handle, self.display.handle, layer, &mut dest_rect_vc, image_resource.resource, &mut src_rect_vc, dispmanx::DISPMANX_PROTECTION_NONE, &mut NO_ALPHA, ptr::null_mut(), dispmanx::Transform::NO_ROTATE);
+    }
+
+    pub fn submit_sync(&self) {
+        dispmanx::update_submit_sync(self.handle);
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct RGB8 {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8
+}
+
+pub struct Palette {
+    data: Vec<u16>
+}
+
+fn rgb_to_16bit(rgb: RGB8) -> u16 {
+    ((rgb.r as u16 >> 3) << 11) | ((rgb.g as u16 >> 2) << 5) | (rgb.b as u16 >> 3)
+}
+
+impl Palette {
+    pub fn from_colors(colors: Vec<RGB8>) -> Self {
+        Palette {
+            data: colors.into_iter().map(|r| rgb_to_16bit(r)).collect()
+        }
+    }
+
+    pub fn get_data_ptr(&mut self) -> *mut c_void {
+        self.data.as_mut_ptr() as *mut c_void
+    }
+}
+
+type SetPixelsIndexed = fn(image: &mut Image, x: i32, y: i32, indices: Vec<u8>);
+
+fn set_pixels_8bpp(image: &mut Image, x: i32, y: i32, indices: Vec<u8>) {
+    let offset = (x + y * image.pitch) as usize;
+    let end = offset + indices.len() as usize;
+    image.data.splice(offset..end, indices.into_iter());
+}
+
+pub struct Image {
+    image_type: ImageType,
+    pub width: i32,
+    pub height: i32,
+    pub pitch: i32,
+    pub aligned_height: i32,
+    data: Vec<u8>,
+    set_pixels_indexed: SetPixelsIndexed
+}
+
+fn align_to_16(x: i32) -> i32 {
+    (x + 15) & !15
+}
+
+impl Image {
+    pub fn new(image_type: ImageType, width: i32, height: i32) -> Self {
+        match image_type {
+            ImageType::_8BPP => {
+                let bps: u16 = 8;
+                let pitch: i32 = (align_to_16(width) * bps as i32) / 8;
+                let aligned_height: i32 = align_to_16(height);
+                let data = vec![0u8; (pitch * aligned_height) as usize];
+
+                Self {
+                    image_type: image_type,
+                    width: width,
+                    height: height,
+                    pitch: pitch,
+                    aligned_height: aligned_height,
+                    data: data,
+                    set_pixels_indexed: set_pixels_8bpp
+                }
+            }
+        }
+    }
+
+    pub fn set_pixels_indexed(&mut self, x: i32, y: i32, indices: Vec<u8>) {
+        (self.set_pixels_indexed)(self, x, y, indices);
+    }
+
+    pub fn get_data_ptr(&mut self) -> *mut c_void {
+        self.data.as_mut_ptr() as *mut c_void
+    }
+
+    pub fn get_src_rect(&self) -> Rect {
+        Rect { x: 0, y: 0, width: self.width << 16, height: self.height << 16 }
+    }
+}
+
+pub struct ImageResource<'a> {
+    pub image: &'a mut Image,
+    pub resource: dispmanx::ResourceHandle
+}
+
+impl<'a> ImageResource<'a> {
+    pub fn for_image(image: &'a mut Image) -> Self {
+        let mut _ptr: u32 = 0;
+        let resource = dispmanx::resource_create(image_type_to_vc_image_type(image.image_type), (image.width | (image.pitch << 16)) as u32, (image.height | (image.aligned_height << 16)) as u32, &mut _ptr);
+
+        Self {
+            image: image,
+            resource: resource
+        }
+    }
+
+    pub fn set_palette(&self, palette: &mut Palette) {
+        dispmanx::resource_set_palette(self.resource, palette.get_data_ptr(), 0, palette.data.len() as i32 * 2);
+    }
+
+    pub fn update(&mut self) {
+        let rect = VCRect { x: 0, y: 0, width: self.image.width, height: self.image.height };
+        dispmanx::resource_write_data(self.resource, image_type_to_vc_image_type(self.image.image_type), self.image.pitch, self.image.get_data_ptr(), &rect);
+    }
+
+}

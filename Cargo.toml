@@ -1,0 +1,8 @@
+[package]
+name = "picm"
+version = "0.1.0"
+authors = ["István Nagy <nistvan.86@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+videocore = { git = "https://github.com/ionosnetworks/rust-videocore" }
