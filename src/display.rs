@@ -1,9 +1,16 @@
 use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect};
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::ptr;
 use std::thread;
+use std::os::raw::c_char;
 
 const NO_ALPHA: dispmanx::VCAlpha = dispmanx::VCAlpha { flags: dispmanx::FlagsAlpha::FIXED_ALL_PIXELS, opacity: 255, mask: 0 };
+
+#[cfg(target_arch = "arm")]
+#[link(name = "bcm_host")]
+extern {
+    fn vc_gencmd_send(format: *const c_char, ...) -> i32;
+}
 
 #[derive(Copy, Clone)]
 pub enum ImageType {
@@ -42,6 +49,10 @@ extern "C" fn vsync_callback(_: dispmanx::UpdateHandle, arg: *mut c_void) {
 
 extern "C" fn null_callback(_: dispmanx::UpdateHandle, _: *mut c_void) { }
 
+fn get_c_string(text: &'static str) -> CString {
+    CString::new(text).expect("Failed to get CString")
+}
+
 impl<'d> Display {
     pub fn init(display: u32) -> Self {
         bcm_host::init();
@@ -49,6 +60,16 @@ impl<'d> Display {
 
         Display {
             handle: disp_handle
+        }
+    }
+
+    pub fn set_bilinear_filtering(&'d self, enabled: bool) {
+        unsafe {
+            if enabled {
+                vc_gencmd_send(get_c_string("%s").as_ptr(), get_c_string("scaling_kernel 0 -2 -6 -8 -10 -8 -3 2 18 50 82 119 155 187 213 227 227 213 187 155 119 82 50 18 2 -3 -8 -10 -8 -6 -2 0 0").as_ptr());
+            } else {
+                vc_gencmd_send(get_c_string("%s").as_ptr(), get_c_string("scaling_kernel 0 0 0 0 0 0 0 0 1 1 1 1 255 255 255 255 255 255 255 255 1 1 1 1 0 0 0 0 0 0 0 0 1").as_ptr());
+            }
         }
     }
 

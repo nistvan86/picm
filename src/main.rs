@@ -1,17 +1,19 @@
 mod display;
 mod timer;
+mod pcm;
 
 use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8, VSyncData};
+use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
 
 use std::{thread, time, io, fs, sync::Arc};
 
 use hound;
 
-const WIDTH: i32 = 137;
+const WIDTH: i32 = 138;
 const HEIGHT: i32 = 576 / 2;
 
-const CRC16_CCIT_POLY: u16 = 0x1021;
+const TOTAL_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution
 
 static LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
 static LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
@@ -35,63 +37,43 @@ fn bits_to_line_data(bits: u128) -> Vec<u8> {
     let mut cursor = 1u128 << 127;
     loop {
         data.push(if bits & cursor == cursor { 1 } else { 0 });
-
-        cursor = cursor >> 1;
-        if cursor == 1 { break; }
+        if cursor == 1 { 
+            break; 
+        } else {
+            cursor = cursor >> 1;
+        }
     }
 
     data
 }
 
-fn get_crc16(data: u128, bits: u8) -> u16 {
-    let mut crc = 0xffffu16;
 
-    let mut cursor = 1u128 << bits - 1;
-    loop {
-        let xor_flag = crc & 0x8000 > 0;
+fn next_stereo_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs::File>, i32>) -> Option<[u16; 2]> {
+    let mut result = [0u16; 2];
 
-        crc = crc << 1;
-
-        if data & cursor > 0 {
-            crc += 1;
+    for i in 0..2 {
+        match wav_samples.next() {
+            Some(sample) => {
+                result[i] = sample.ok().unwrap() as u16;
+            },
+            None => return None
         }
-
-        if xor_flag { 
-            crc = crc ^ CRC16_CCIT_POLY;
-        }
-
-        if cursor == 1 { break; }
-        cursor = cursor >> 1;
     }
 
-    for _ in 0..16 {
-        let xor_flag = crc & 0x8000 > 0;
-        crc = crc << 1;
-
-        if xor_flag { crc = crc ^ CRC16_CCIT_POLY }
-    }
-
-    crc
+    Some(result)
 }
 
-fn next_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs::File>, i32>) -> [i32; 6] {
-    let mut result = [0i32; 6];
-
-    for i in 0..6 {
-        match wav_samples.next() {
-            Some(sample) => result[i] = sample.ok().unwrap(),
-            None => result[i] = 0
-        }
-    }
-
-    result
+fn open_wave() -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
+    hound::WavReader::open("test.wav").unwrap().into_samples::<i32>()
 }
 
 fn main() {
 
-    let mut wav_samples = hound::WavReader::open("test.wav").unwrap().into_samples::<i32>();
+    let mut wav_samples = open_wave();
+    let mut pcm = PCMEngine::new();
 
     let display = Arc::new(Display::init(0));
+    display.set_bilinear_filtering(false);
 
     let mut palette = Palette::from_colors(vec![RGB8 { r: 0, g: 0, b: 0 }, RGB8 { r: 153, g: 153, b: 153 }, RGB8 { r: 255, g: 255, b: 255 }]);
 
@@ -103,7 +85,7 @@ fn main() {
         resources.push(resource);
     }
     
-    let dest_rect = Rect { x: 20, y: 0, width: 700, height: 576 };
+    let dest_rect = Rect { x: 20, y: 1, width: 700, height: 576 };
 
     let update = display.start_update(10);
     let element = update.create_element_from_image_resource(200, dest_rect, &resources[0]);
@@ -118,45 +100,54 @@ fn main() {
         let mut next_resource = 0;
 
         loop {
-            let display = display.start_update(10);
+            let update = display.start_update(10);
 
-            display.replace_element_source(&element, &resources[next_resource]);
+            update.replace_element_source(&element, &resources[next_resource]);
 
             thread::park(); // VSync handler wakes us up
             thread::sleep(time::Duration::from_micros(2000)); // To miss the current draw and not update in middle of field
-            display.submit();
+            update.submit();
 
             timer.begin();
 
             next_resource = if next_resource == 1 { 0 } else { 1 };
 
-            for h in 0..HEIGHT {
+            for h in 0..TOTAL_LINES_IN_FIELD {
                 let mut line = base_line.clone();
 
-                let mut bits = 0u128;
+                let bits;
 
                 if h == 0 { // Control line
-                    bits = CONTROL_LINE_BASE;
-                    //bits = bits | (0b00000000000110 << 16); // CTL: no copyright, P-correction, Q-correction, no pre-emph
+                    // CTL, last 4 bits: no copyright, P-correction, Q-correction, pre-emph
+                    bits = pcm::add_crc_to_data(CONTROL_LINE_BASE | (0b00000000000100 << 16));
                 } else {
-                    let six_samples = next_samples(&mut wav_samples);
-                    for s in 0..6 {
-                        let s14 = six_samples[s] as u16 >> 2; // 14 bit part
-                        bits = bits | ((s14 as u128) << (128 - ((s+1)*14)));
+                    loop {
+                        let stereo_sample = next_stereo_samples(&mut wav_samples);
+                        let samples = if stereo_sample.is_none() {
+                            wav_samples = open_wave(); // Reopen we reached the end
+                            next_stereo_samples(&mut wav_samples).unwrap()
+                        } else {
+                            stereo_sample.unwrap()
+                        };
+
+                        let line_data = pcm.submit_stereo_sample(samples);
+                        if line_data.is_some() {
+                            bits = line_data.unwrap();
+                            break;
+                        }
                     }
                 }
 
-                // Add lasts 16 bit CRC
-                let upper_112bit = bits >> 16;
-                let crc = get_crc16(upper_112bit, 112);
-                bits = bits | crc as u128;
-
                 // Convert to line data
-                let bits_as_line_data = bits_to_line_data(bits);
-                paste(&mut line, 4, bits_as_line_data);
 
-                resources[next_resource].image.set_pixels_indexed(0, h, line);
+                if h < HEIGHT {
+                    let bits_as_line_data = bits_to_line_data(bits);
+                    paste(&mut line, 4, bits_as_line_data);
+
+                    resources[next_resource].image.set_pixels_indexed(0, h, line);
+                }
             }
+
             resources[next_resource].update();
 
             timer.end();

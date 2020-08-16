@@ -29,7 +29,7 @@ impl AvgPerformanceTimer {
             self.avg_us = elapsed_us;
         }
 
-        if self.current_tick == self.print_every { // Every second
+        if self.current_tick == self.print_every {
             println!("{} us", self.avg_us);
             self.current_tick = 0;
         } else {
