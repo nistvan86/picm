@@ -6,3 +6,4 @@ edition = "2018"
 
 [dependencies]
 videocore = { git = "https://github.com/ionosnetworks/rust-videocore" }
+hound = "3.4.0"
