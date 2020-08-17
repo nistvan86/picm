@@ -13,6 +13,9 @@ use hound;
 const WIDTH: i32 = 138;
 const HEIGHT: i32 = 576 / 2;
 
+const LEFT_OFFSET: i32 = 14;
+const TOP_OFFSET: i32 = 1;
+
 const TOTAL_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution
 
 static LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
@@ -85,7 +88,7 @@ fn main() {
         resources.push(resource);
     }
     
-    let dest_rect = Rect { x: 20, y: 1, width: 700, height: 576 };
+    let dest_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: 720 - LEFT_OFFSET, height: (HEIGHT * 2) };
 
     let update = display.start_update(10);
     let element = update.create_element_from_image_resource(200, dest_rect, &resources[0]);
@@ -105,7 +108,7 @@ fn main() {
             update.replace_element_source(&element, &resources[next_resource]);
 
             thread::park(); // VSync handler wakes us up
-            thread::sleep(time::Duration::from_micros(2000)); // To miss the current draw and not update in middle of field
+            thread::sleep(time::Duration::from_micros(4000)); // To miss the current draw and not update in middle of field
             update.submit();
 
             timer.begin();

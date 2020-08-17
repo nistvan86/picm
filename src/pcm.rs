@@ -104,6 +104,25 @@ impl PCMEngine {
         p
     }
 
+    fn get_s_value(&self) -> u16 {
+        if self.last_three_stereo_sample.len() < 3 { panic!("Not enough stereo samples."); }
+
+        let mut p = 0u16;
+        let mut pos = 12;
+        let mut xor = 0u8;
+        for stereo_sample in &self.last_three_stereo_sample {
+            let left_bits = stereo_sample[0] & 3;
+            let right_bits = stereo_sample[1] & 3;
+            p = p | (left_bits << pos);
+            pos-=2;
+            p = p | (right_bits << pos);
+            pos-=2;
+            xor = xor ^ left_bits as u8 ^ right_bits as u8;
+        }
+        p = p | xor as u16;
+        p
+    }
+
     pub fn submit_stereo_sample(&mut self, stereo_sample: [u16; 2]) -> Option<u128> {
         for sample in &stereo_sample { self.submit_sample_to_delayer(*sample); }
         self.last_three_stereo_sample.push(stereo_sample);
@@ -111,11 +130,10 @@ impl PCMEngine {
         //if self.init_sample_counter < MIN_NUM_STEREO_SAMPLES { self.init_sample_counter+=1 }
 
         if self.last_three_stereo_sample.len() == 3 {
-            // We need to calculate an additional P and Q 14 bit checksum here
-            // Note: in 16 bit mode, instead of Q we can output the extra bits
+            // We need to calculate an additional P CRC checksum and Q for the extra 2 bits / sample
 
             self.submit_sample_to_delayer(self.get_p_value() << 2); // P
-            self.submit_sample_to_delayer(0); // TODO: Q/16 bit extension
+            self.submit_sample_to_delayer(self.get_s_value() << 2); // S (16 bit extension)
 
             self.last_three_stereo_sample.clear();
 
