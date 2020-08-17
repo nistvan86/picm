@@ -1,7 +1,6 @@
-//const MIN_NUM_STEREO_SAMPLES: u16 = 336;
-const CRC16_CCIT_POLY: u16 = 0x1021;
+const CRC16_CCITT_POLY: u16 = 0x1021;
 
-fn get_crc16(data: u128, bits: u8) -> u16 {
+fn get_crc16_ccitt_false(data: u128, bits: u8) -> u16 {
     let mut crc = 0xffffu16;
 
     if bits > 128 { panic!("Bits can be maximum 128 bits") }
@@ -20,7 +19,7 @@ fn get_crc16(data: u128, bits: u8) -> u16 {
             crc = crc << 1;
 
             if xor_flag { 
-                crc = crc ^ CRC16_CCIT_POLY;
+                crc = crc ^ CRC16_CCITT_POLY;
             }
 
             byte = byte << 1;
@@ -34,7 +33,7 @@ fn get_crc16(data: u128, bits: u8) -> u16 {
 }
 
 pub fn add_crc_to_data(data: u128) -> u128 {
-    data | get_crc16(data >> 16, 112) as u128
+    data | get_crc16_ccitt_false(data >> 16, 112) as u128
 }
 
 struct Delayer {
@@ -61,8 +60,7 @@ impl Delayer {
 pub struct PCMEngine {
     lines: Vec<Delayer>,
     current_line_input: usize,
-    last_three_stereo_sample: Vec<[u16; 2]>,
-    //init_sample_counter: u16
+    last_three_stereo_sample: Vec<[u16; 2]>
 }
 
 impl PCMEngine {
@@ -75,8 +73,7 @@ impl PCMEngine {
         PCMEngine {
             lines: delayers,
             current_line_input: 0,
-            last_three_stereo_sample: Vec::with_capacity(3),
-            //init_sample_counter: 0
+            last_three_stereo_sample: Vec::with_capacity(3)
         }
     }
 
@@ -99,7 +96,7 @@ impl PCMEngine {
         if self.last_three_stereo_sample.len() < 3 { panic!("Not enough stereo samples."); }
         let mut p = 0u16;
         for stereo_sample in &self.last_three_stereo_sample {
-            p = p ^ (stereo_sample[0]) >> 2 ^ (stereo_sample[1] >> 2);
+            p = (p ^ ((stereo_sample[0]) >> 2)) ^ (stereo_sample[1] >> 2);
         }
         p
     }
@@ -107,41 +104,34 @@ impl PCMEngine {
     fn get_s_value(&self) -> u16 {
         if self.last_three_stereo_sample.len() < 3 { panic!("Not enough stereo samples."); }
 
-        let mut p = 0u16;
+        let mut s = 0u16;
         let mut pos = 12;
         let mut xor = 0u8;
         for stereo_sample in &self.last_three_stereo_sample {
             let left_bits = stereo_sample[0] & 3;
             let right_bits = stereo_sample[1] & 3;
-            p = p | (left_bits << pos);
+            s = s | (left_bits << pos);
             pos-=2;
-            p = p | (right_bits << pos);
+            s = s | (right_bits << pos);
             pos-=2;
             xor = xor ^ left_bits as u8 ^ right_bits as u8;
         }
-        p = p | xor as u16;
-        p
+        s | xor as u16
     }
 
     pub fn submit_stereo_sample(&mut self, stereo_sample: [u16; 2]) -> Option<u128> {
         for sample in &stereo_sample { self.submit_sample_to_delayer(*sample); }
         self.last_three_stereo_sample.push(stereo_sample);
 
-        //if self.init_sample_counter < MIN_NUM_STEREO_SAMPLES { self.init_sample_counter+=1 }
-
         if self.last_three_stereo_sample.len() == 3 {
-            // We need to calculate an additional P CRC checksum and Q for the extra 2 bits / sample
+            // We need to calculate an additional P CRC checksum and S for 16 bit resolution extension
 
             self.submit_sample_to_delayer(self.get_p_value() << 2); // P
             self.submit_sample_to_delayer(self.get_s_value() << 2); // S (16 bit extension)
 
             self.last_three_stereo_sample.clear();
 
-            //if self.init_sample_counter == MIN_NUM_STEREO_SAMPLES {
-                Some(self.get_current_line_data())
-            /*} else {
-                None
-            }*/
+            Some(self.get_current_line_data())
         } else {
             None
         }
