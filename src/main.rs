@@ -5,6 +5,8 @@ mod pcm;
 use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8, VSyncData};
 use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
+use thread_priority::*;
+use rb::*;
 
 use std::{thread, io, fs, sync::Arc};
 
@@ -19,6 +21,8 @@ const LEFT_OFFSET: i32 = 14;
 const TOP_OFFSET: i32 = 1;
 
 const TOTAL_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution, 295 lines in field (incl. CTL line)
+const TOTAL_DATA_LINES_IN_FIELD: i32 = TOTAL_LINES_IN_FIELD - 1;
+const RINGBUFFER_SIZE: i32 = TOTAL_DATA_LINES_IN_FIELD * 8; // 8 fields in advance
 
 static LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
 static LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
@@ -85,11 +89,40 @@ fn open_wave(file: &String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i3
 }
 
 fn main() {
-
     let opts: Opts = Opts::parse();
 
-    let mut wav_samples = open_wave(&opts.input);
-    let mut pcm = PCMEngine::new();
+    let ring_buffer: SpscRb<u128> = SpscRb::new(RINGBUFFER_SIZE as usize);
+    let (ring_buffer_producer, ring_buffer_consumer) = (ring_buffer.producer(), ring_buffer.consumer());
+
+    thread::spawn(move || {
+        let mut wav_samples = open_wave(&opts.input);
+
+        let mut pcm = PCMEngine::new();
+
+        let mut result: Vec<u128> = vec![];
+
+        loop {
+            let stereo_sample = next_stereo_samples(&mut wav_samples);
+            let samples = if stereo_sample.is_none() {
+                wav_samples = open_wave(&opts.input); // Reopen we reached the end
+                next_stereo_samples(&mut wav_samples).unwrap()
+            } else {
+                stereo_sample.unwrap()
+            };
+
+            let line_data = pcm.submit_stereo_sample(samples);
+
+            if line_data.is_some() {
+                //println!("Pushed to local buffer.");
+                result.push(line_data.unwrap());
+            }
+
+            if result.len() == TOTAL_DATA_LINES_IN_FIELD as usize {
+                ring_buffer_producer.write_blocking(&result);
+                result.clear();
+            }
+        }
+    });
 
     let display = Arc::new(Display::init(0));
     display.set_bilinear_filtering(false);
@@ -112,11 +145,14 @@ fn main() {
 
     let display_clone = display.clone();
 
-    let base_line = get_base_line();
-
     let draw_thread_handle = thread::spawn(move || {
+        set_current_thread_priority(ThreadPriority::Max).expect("Failed to set thread priority");
+
         let mut timer = AvgPerformanceTimer::new(50);
         let mut next_resource = 0;
+
+        let base_line = get_base_line();
+        let mut next_field_data = [0u128; TOTAL_DATA_LINES_IN_FIELD as usize];
 
         loop {
             thread::park(); // VSync handler wakes us up
@@ -125,6 +161,8 @@ fn main() {
             let update = display.start_update(10);
 
             next_resource = if next_resource == 1 { 0 } else { 1 };
+
+            ring_buffer_consumer.read_blocking(&mut next_field_data);
 
             for h in 0..TOTAL_LINES_IN_FIELD {
                 let mut line = base_line.clone();
@@ -135,23 +173,7 @@ fn main() {
                     // CTL, last 4 bits: no copyright, P-correction, no Q-correction (16bit mode), no pre-emph
                     bits = pcm::add_crc_to_data(CONTROL_LINE_BASE | (0b00000000000011 << 16));
                 } else {
-                    loop {
-                        let stereo_sample = next_stereo_samples(&mut wav_samples);
-                        let samples = if stereo_sample.is_none() {
-                            wav_samples = open_wave(&opts.input); // Reopen we reached the end
-                            next_stereo_samples(&mut wav_samples).unwrap()
-                        } else {
-                            stereo_sample.unwrap()
-                        };
-
-                        let line_data = pcm.submit_stereo_sample(samples);
-
-                        if line_data.is_some() {
-                            bits = line_data.unwrap();
-                            break;
-                        }
-
-                    }
+                    bits = next_field_data[(h-1) as usize];
                 }
 
                 // Convert to line data if we are inside renderable region
