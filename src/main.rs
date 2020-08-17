@@ -26,7 +26,7 @@ static LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
 const CONTROL_LINE_BASE: u128 = 0xCCCCCCCCCCCCCC000000000000000000u128;
 
 #[derive(Clap)]
-#[clap(name="PiCM", version = "0.1", author = "István Nagy <nistvan.86@gmail.com>")]
+#[clap(name="PiCM", version = "0.1.0", author = "István Nagy <nistvan.86@gmail.com>")]
 struct Opts {
     /// WAV file to be played.
     input: String,
