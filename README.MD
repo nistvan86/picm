@@ -2,6 +2,8 @@
 
 A realtime PCM encoder for the Raspberry Pi.
 
+Watch it in action: https://www.youtube.com/watch?v=WRrcjgK-Pc8&feature=youtu.be
+
 This software allows you to output digital audio encoded as composite video which is compatible with the SONY PCM-F1 hadware PCM decoder.
 
 ## Limitations (at the moment)
