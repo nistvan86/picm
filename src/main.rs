@@ -103,11 +103,10 @@ fn main() {
         let mut next_resource = 0;
 
         loop {
-            let update = display.start_update(10);
-
             thread::park(); // VSync handler wakes us up
-
             timer.begin();
+
+            let update = display.start_update(10);
 
             next_resource = if next_resource == 1 { 0 } else { 1 };
 
