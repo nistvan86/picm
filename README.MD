@@ -11,7 +11,7 @@ This software allows you to output digital audio encoded as composite video whic
 - Only PAL video is rendered. Every parameter is hardwired for this at the moment.
 - No playback controls, WAV files is being looped as long as you don't terminate the executable.
 - Dispmanx resources are not freed explicitly after termination (though it's working this way, it would be nicer to do so)
-- Encoding of the bitformat is done in series with the rendering (these two should be separated in the future); background activity can knock the app out of sync and some distortion might be heard.
+- Encoding of the bitformat is done in series with the rendering (these two should be separated in the future); background activity can knock the app out of sync and some distortion might be heard. You can mitigate this by running the process in highest Linux priority: `sudo chrt --rr 99 ./picm <wav_file>`
 - No tests :( Need to figure out how to run them in a cross-compiled environment. Yeah, I'm still learning Rust as I wrote this :)
 
 ## Requirements
