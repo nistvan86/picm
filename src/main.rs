@@ -10,6 +10,8 @@ use std::{thread, io, fs, sync::Arc};
 
 use hound;
 
+use clap::Clap;
+
 const WIDTH: i32 = 138;
 const HEIGHT: i32 = 576 / 2;
 
@@ -22,6 +24,13 @@ static LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
 static LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
 
 const CONTROL_LINE_BASE: u128 = 0xCCCCCCCCCCCCCC000000000000000000u128;
+
+#[derive(Clap)]
+#[clap(name="PiCM", version = "0.1", author = "István Nagy <nistvan.86@gmail.com>")]
+struct Opts {
+    /// WAV file to be played.
+    input: String,
+}
 
 fn paste(v: &mut Vec<u8>, x: usize, p: Vec<u8>) {
     v.splice(x..x + p.len(), p);
@@ -66,13 +75,20 @@ fn next_stereo_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs:
     Some(result)
 }
 
-fn open_wave() -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
-    hound::WavReader::open("test.wav").unwrap().into_samples::<i32>()
+fn open_wave(file: &String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
+    let reader = hound::WavReader::open(file).unwrap();
+    let spec = reader.spec();
+    if spec.bits_per_sample != 16 || spec.sample_format != hound::SampleFormat::Int || spec.sample_rate != 44100 || spec.channels != 2 {
+        panic!("Currently only 44.1kHz Stereo 16 bit WAV files are supported.");
+    }
+    reader.into_samples::<i32>()
 }
 
 fn main() {
 
-    let mut wav_samples = open_wave();
+    let opts: Opts = Opts::parse();
+
+    let mut wav_samples = open_wave(&opts.input);
     let mut pcm = PCMEngine::new();
 
     let display = Arc::new(Display::init(0));
@@ -122,7 +138,7 @@ fn main() {
                     loop {
                         let stereo_sample = next_stereo_samples(&mut wav_samples);
                         let samples = if stereo_sample.is_none() {
-                            wav_samples = open_wave(); // Reopen we reached the end
+                            wav_samples = open_wave(&opts.input); // Reopen we reached the end
                             next_stereo_samples(&mut wav_samples).unwrap()
                         } else {
                             stereo_sample.unwrap()

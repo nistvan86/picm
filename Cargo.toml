@@ -7,3 +7,4 @@ edition = "2018"
 [dependencies]
 videocore = { git = "https://github.com/ionosnetworks/rust-videocore" }
 hound = "3.4.0"
+clap = "3.0.0-beta.1"
