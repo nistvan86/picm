@@ -14,8 +14,7 @@ extern {
 
 #[derive(Copy, Clone)]
 pub enum ImageType {
-    _8BPP,
-    _1BPP
+    _8BPP
 }
 
 pub struct Rect {
@@ -31,8 +30,7 @@ fn rect_to_vc_rect(rect: Rect) -> VCRect {
 
 fn image_type_to_vc_image_type(image_type: ImageType) -> VCImageType {
     match image_type {
-        ImageType::_8BPP => VCImageType::_8BPP,
-        ImageType::_1BPP => VCImageType::_1BPP
+        ImageType::_8BPP => VCImageType::_8BPP
     }
 }
 
@@ -177,28 +175,18 @@ impl Image {
                     aligned_height: aligned_height,
                     data: data
                 }
-            },
-            ImageType::_1BPP => {
-                let bps: u8 = 1;
-                let pitch: i32 = (align_to_16(width) * bps as i32) / 8;
-                let data = vec![0u8; (pitch * aligned_height) as usize];
-
-                Self {
-                    image_type: image_type,
-                    width: width,
-                    height: height,
-                    pitch: pitch,
-                    aligned_height: aligned_height,
-                    data: data
-                }
             }
         }
     }
 
-    pub fn set_pixel_bytes(&mut self, x: i32, y: i32, bytes: Vec<u8>) {
-        let offset = (x + y * self.pitch) as usize;
-        let end = offset + bytes.len() as usize;
-        self.data.splice(offset..end, bytes.into_iter());
+    pub fn set_pixel_bytes(&mut self, x: i32, y: i32, bytes: &Vec<u8>) {
+        match self.image_type {
+            ImageType::_8BPP => {
+                let offset = (x + y * self.pitch) as usize;
+                let end = offset + bytes.len() as usize;
+                self.data.splice(offset..end, bytes.clone().into_iter());
+            }
+        }
     }
 
     pub fn get_data_ptr(&mut self) -> *mut c_void {
