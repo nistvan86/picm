@@ -24,7 +24,7 @@ Watch it in action: https://www.youtube.com/watch?v=WRrcjgK-Pc8&feature=youtu.be
     picm [wav_file_path | m3u_file_path]
 
 ## Inspirations:
-- raspi-teletext
+- raspi-teletext: https://github.com/ali1234/raspi-teletext
 
 ## Thanks
 
