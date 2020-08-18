@@ -8,6 +8,8 @@ pub struct Playlist {
     cursor: usize,
 }
 
+//const FILE_EXTENSIONS: &'static [&'static str] = &[".wav", ".flac"];
+
 impl Playlist {
     pub fn new_with_single_item(file: String) -> Self {
         let path = Path::new(&file);
@@ -28,8 +30,9 @@ impl Playlist {
 
         let mut files: Vec<String> = vec![];
         for (_, line) in reader.lines().enumerate() {
-            let line = line.unwrap();
-            if !line.starts_with("#") {
+            let line: String = line.unwrap();
+
+            if !line.starts_with("#") && line.trim().len() > 0 {
                 files.push(line);
             }
         }

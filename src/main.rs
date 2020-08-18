@@ -1,3 +1,4 @@
+mod audio_file;
 mod display;
 mod timer;
 mod pcm;
@@ -8,8 +9,7 @@ use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
 use playlist::Playlist;
 
-use std::{thread, io, fs, sync::Arc};
-use hound;
+use std::{thread, sync::Arc};
 use clap::Clap;
 use thread_priority::*;
 use rb::*;
@@ -60,29 +60,17 @@ fn get_base_line() -> Vec<u8> {
     line
 }
 
-fn next_stereo_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs::File>, i32>) -> Option<[u16; 2]> {
+fn next_stereo_samples(audio_reader: &mut Box<dyn audio_file::AudioFileReader>) -> Option<[u16; 2]> {
     let mut result = [0u16; 2];
 
     for i in 0..2 {
-        match wav_samples.next() {
-            Some(sample) => {
-                result[i] = sample.ok().unwrap() as u16;
-            },
+        match audio_reader.next() {
+            Some(sample) => result[i] = sample,
             None => return None
         }
     }
 
     Some(result)
-}
-
-fn open_wave(file: String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
-    println!("Opening WAV: {}", file);
-    let reader = hound::WavReader::open(file).unwrap();
-    let spec = reader.spec();
-    if spec.bits_per_sample != 16 || spec.sample_format != hound::SampleFormat::Int || spec.sample_rate != 44100 || spec.channels != 2 {
-        panic!("Currently only 44.1kHz Stereo 16 bit WAV files are supported.");
-    }
-    reader.into_samples::<i32>()
 }
 
 fn bits_to_pixels(bits: u128, pixel_bytes: &mut [u8; 128]) {
@@ -105,7 +93,7 @@ fn main() {
     let (ring_buffer_producer, ring_buffer_consumer) = (ring_buffer.producer(), ring_buffer.consumer());
 
     thread::spawn(move || {
-        let mut wav_samples = open_wave(playlist.next_file());
+        let mut wav_samples = audio_file::open_wave(playlist.next_file());
         let mut pcm = PCMEngine::new();
 
         let mut result: Vec<u128> = vec![];
@@ -113,7 +101,7 @@ fn main() {
         loop {
             let stereo_sample = next_stereo_samples(&mut wav_samples);
             let samples = if stereo_sample.is_none() {
-                wav_samples = open_wave(playlist.next_file()); // Move to next playlist item
+                wav_samples = audio_file::open_wave(playlist.next_file()); // Move to next playlist item
                 next_stereo_samples(&mut wav_samples).unwrap()
             } else {
                 stereo_sample.unwrap()
