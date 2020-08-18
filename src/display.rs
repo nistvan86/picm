@@ -144,22 +144,13 @@ impl Palette {
     }
 }
 
-type SetPixelsIndexed = fn(image: &mut Image, x: i32, y: i32, indices: Vec<u8>);
-
-fn set_pixels_8bpp(image: &mut Image, x: i32, y: i32, indices: Vec<u8>) {
-    let offset = (x + y * image.pitch) as usize;
-    let end = offset + indices.len() as usize;
-    image.data.splice(offset..end, indices.into_iter());
-}
-
 pub struct Image {
     image_type: ImageType,
     pub width: i32,
     pub height: i32,
     pub pitch: i32,
     pub aligned_height: i32,
-    data: Vec<u8>,
-    set_pixels_indexed: SetPixelsIndexed
+    data: Vec<u8>
 }
 
 fn align_to_16(x: i32) -> i32 {
@@ -168,11 +159,12 @@ fn align_to_16(x: i32) -> i32 {
 
 impl Image {
     pub fn new(image_type: ImageType, width: i32, height: i32) -> Self {
+        let aligned_height: i32 = align_to_16(height);
+
         match image_type {
             ImageType::_8BPP => {
-                let bps: u16 = 8;
+                let bps: u8 = 8;
                 let pitch: i32 = (align_to_16(width) * bps as i32) / 8;
-                let aligned_height: i32 = align_to_16(height);
                 let data = vec![0u8; (pitch * aligned_height) as usize];
 
                 Self {
@@ -181,15 +173,20 @@ impl Image {
                     height: height,
                     pitch: pitch,
                     aligned_height: aligned_height,
-                    data: data,
-                    set_pixels_indexed: set_pixels_8bpp
+                    data: data
                 }
             }
         }
     }
 
-    pub fn set_pixels_indexed(&mut self, x: i32, y: i32, indices: Vec<u8>) {
-        (self.set_pixels_indexed)(self, x, y, indices);
+    pub fn set_pixel_bytes(&mut self, x: i32, y: i32, bytes: &Vec<u8>) {
+        match self.image_type {
+            ImageType::_8BPP => {
+                let offset = (x + y * self.pitch) as usize;
+                let end = offset + bytes.len() as usize;
+                self.data.splice(offset..end, bytes.clone().into_iter());
+            }
+        }
     }
 
     pub fn get_data_ptr(&mut self) -> *mut c_void {
