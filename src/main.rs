@@ -15,6 +15,7 @@ use thread_priority::*;
 use rb::*;
 
 const WIDTH: i32 = 138;
+const DATA_WIDTH: i32 = WIDTH - LINE_PREAMBLE.len() as i32 - LINE_PREAMBLE.len() as i32;
 const HEIGHT: i32 = 576 / 2;
 
 const LEFT_OFFSET: i32 = 14;
@@ -24,8 +25,14 @@ const TOTAL_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution, 295 lines
 const TOTAL_DATA_LINES_IN_FIELD: i32 = TOTAL_LINES_IN_FIELD - 1;
 const RINGBUFFER_SIZE: i32 = TOTAL_DATA_LINES_IN_FIELD * 8; // 8 fields in advance
 
-static LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
-static LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
+const LINE_PREAMBLE: &'static [u8] = &[1, 0, 1, 0];
+const LINE_END_WHITE_REFERENCE: &'static [u8] = &[0, 2, 2, 2, 2];
+
+const BLACK: RGB8 = RGB8 { r: 0, g: 0, b: 0};
+const GRAY: RGB8 = RGB8 { r: 153, g: 153, b: 153 };
+const WHITE: RGB8 = RGB8 { r: 255, g: 255, b: 255 };
+
+const DISPMANX_LAYER: i32 = 200;
 
 const CONTROL_LINE_BASE: u128 = 0xCCCCCCCCCCCCCC000000000000000000u128;
 
@@ -47,7 +54,7 @@ fn get_base_line() -> Vec<u8> {
     line
 }
 
-fn bits_to_line_pixels(bits: u128) -> Vec<u8> {
+/*fn bits_to_line_pixels(bits: u128) -> Vec<u8> {
     let mut data: Vec<u8> = Vec::with_capacity(128);
 
     let mut cursor = 1u128 << 127;
@@ -61,7 +68,7 @@ fn bits_to_line_pixels(bits: u128) -> Vec<u8> {
     }
 
     data
-}
+}*/
 
 
 fn next_stereo_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs::File>, i32>) -> Option<[u16; 2]> {
@@ -131,32 +138,48 @@ fn main() {
     let display = Arc::new(Display::init(0));
     display.set_bilinear_filtering(false);
 
-    let mut palette = Palette::from_colors(vec![RGB8 { r: 0, g: 0, b: 0 }, RGB8 { r: 153, g: 153, b: 153 }, RGB8 { r: 255, g: 255, b: 255 }]);
-
-    let mut resources: Vec<ImageResource> = Vec::new();
-    for _ in 0..2 {
-        let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, WIDTH, HEIGHT));
-        resource.set_palette(&mut palette);
-        resource.update();
-        resources.push(resource);
-    }
-    
-    let dest_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: 720 - LEFT_OFFSET, height: (HEIGHT * 2) };
-
-    let update = display.start_update(10);
-    let element = update.create_element_from_image_resource(200, dest_rect, &resources[0]);
-    update.submit_sync();
-
     let display_clone = display.clone();
 
     let draw_thread_handle = thread::spawn(move || {
         set_current_thread_priority(ThreadPriority::Max).expect("Failed to set thread priority");
 
+        let update = display.start_update(10);
+
+        // Synchronization frame
+        let mut palette_4bpp = Palette::from_colors(vec![BLACK, GRAY, WHITE]);
+        let mut sync_frame_resource = ImageResource::from_image(Image::new(ImageType::_8BPP, WIDTH, 1));
+        sync_frame_resource.set_palette(&mut palette_4bpp);
+        sync_frame_resource.image.set_pixel_bytes(0, 0, get_base_line());
+        sync_frame_resource.update();
+
+        let frame_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: 720 - LEFT_OFFSET, height: (HEIGHT * 2) };
+        update.create_element_from_image_resource(DISPMANX_LAYER, frame_rect, &sync_frame_resource);
+
+        // Data front and back buffer image resource
+        let mut palette_1bpp = Palette::from_colors(vec![GRAY]);
+        let mut data_resources: Vec<ImageResource> = Vec::new();
+        for _ in 0..2 {
+            let mut resource = ImageResource::from_image(Image::new(ImageType::_1BPP, DATA_WIDTH, HEIGHT));
+            resource.set_palette(&mut palette_1bpp);
+            resource.update();
+            data_resources.push(resource);
+        }
+
+        let physical_pixel_width = (720 - LEFT_OFFSET) / WIDTH;
+        let data_physical_left_offset = LEFT_OFFSET + (physical_pixel_width * ((LINE_PREAMBLE.len() + 1) as i32));
+        let data_physical_width = physical_pixel_width * (DATA_WIDTH + 2);
+
+        let data_rect = Rect { x: data_physical_left_offset, y: TOP_OFFSET, width: data_physical_width, height: (HEIGHT * 2) };
+        let data_element = update.create_element_from_image_resource(DISPMANX_LAYER + 1, data_rect, &data_resources[0]);
+        update.submit_sync();
+
         let mut timer = AvgPerformanceTimer::new(50);
         let mut next_resource = 0;
 
-        let base_line = get_base_line();
         let mut next_field_data = [0u128; TOTAL_DATA_LINES_IN_FIELD as usize];
+
+        // CTL, last 4 bits: no copyright, P-correction, no Q-correction (16bit mode), no pre-emph
+        let ctl_line = pcm::add_crc_to_data(CONTROL_LINE_BASE | (0b00000000000011 << 16));
 
         loop {
             thread::park(); // VSync handler wakes us up
@@ -168,29 +191,12 @@ fn main() {
 
             ring_buffer_consumer.read_blocking(&mut next_field_data);
 
-            for h in 0..TOTAL_LINES_IN_FIELD {
-                let mut line = base_line.clone();
-
-                let bits;
-
-                if h == 0 { // Control line
-                    // CTL, last 4 bits: no copyright, P-correction, no Q-correction (16bit mode), no pre-emph
-                    bits = pcm::add_crc_to_data(CONTROL_LINE_BASE | (0b00000000000011 << 16));
-                } else {
-                    bits = next_field_data[(h-1) as usize];
-                }
-
-                // Convert to line data if we are inside renderable region
-                if h < HEIGHT {
-                    let bits_as_pixel_data = bits_to_line_pixels(bits);
-                    paste(&mut line, 4, bits_as_pixel_data);
-
-                    resources[next_resource].image.set_pixels_indexed(0, h, line);
-                }
+            for h in 0..HEIGHT {
+                data_resources[next_resource].image.set_pixel_bytes(0, h, if h == 0 { ctl_line } else { next_field_data[(h-1) as usize] }.to_be_bytes().to_vec());
             }
 
-            resources[next_resource].update();
-            update.replace_element_source(&element, &resources[next_resource]);
+            data_resources[next_resource].update();
+            update.replace_element_source(&data_element, &data_resources[next_resource]);
             update.submit();
 
             timer.end();
