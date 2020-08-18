@@ -58,89 +58,64 @@ impl FIFODelayer {
 }
 
 pub struct PCMEngine {
-    lines_14bit: Vec<FIFODelayer>,
-    lines_2bit: Vec<FIFODelayer>,
+    lines: Vec<FIFODelayer>,
     current_line_input: usize,
-    last_three_stereo_sample: Vec<[u16; 2]>
+    last_three_stereo_samples: Vec<[u16; 2]>
 }
 
 impl PCMEngine {
     pub fn new() -> Self {
-        let mut lines_16bit: Vec<FIFODelayer> = Vec::with_capacity(7);
+        let mut lines: Vec<FIFODelayer> = Vec::with_capacity(7);
         for d in 0..7 {
-            lines_16bit.push(FIFODelayer::new(d * 16));
-        }
-
-        let mut lines_2bit: Vec<FIFODelayer> = Vec::with_capacity(7);
-        for d in 0..7 {
-            lines_2bit.push(FIFODelayer::new(d * 16));
+            lines.push(FIFODelayer::new(d * 16));
         }
 
         PCMEngine {
-            lines_14bit: lines_16bit,
-            lines_2bit: lines_2bit,
+            lines: lines,
             current_line_input: 0,
-            last_three_stereo_sample: Vec::with_capacity(3)
+            last_three_stereo_samples: Vec::with_capacity(3)
         }
-    }
-
-    fn submit_16bit_sample_to_14bit_delayer(&mut self, sample: u16) {
-        self.lines_14bit[self.current_line_input].feed(sample >> 2);
-    }
-
-    fn submit_16bit_sample_to_2bit_delayer(&mut self, sample: u16) {
-        self.lines_2bit[self.current_line_input].feed(sample & 0x3);
     }
 
     fn get_current_line_data(&self) -> u128 {
         let mut data = 0u128;
-        for d in 0..7 { // 14 bit lines
-            let output_shifted = (self.lines_14bit[d].get_output() as u128) << (128 - 14*(d+1));
-            data = data | output_shifted
+        for d in 0..7 { // 14 bit words
+            let value = ((self.lines[d].get_output() >> 2) as u128) << (128 - 14*(d+1));
+            data = data | value
         }
 
-        for d in 0..7 { // 2 bit lines
-            let output_shifted = (self.lines_2bit[d].get_output() as u128) << (128 - 14*7 - 2*(d+1));
-            data = data | output_shifted
+        let mut s_word = 0u16;
+        for d in 0..7 { // 2 bit words (multiplexed into a single S word)
+            let data = (self.lines[d].get_output() & 0x3) << (14 - 2*(d+1));
+            s_word = s_word | data;
         }
+        data = data | ((s_word as u128) << 128 - 14*8);
 
         add_crc_to_data(data)
     }
 
     fn get_p_value(&self) -> u16 {
-        if self.last_three_stereo_sample.len() < 3 { panic!("Not enough stereo samples."); }
+        if self.last_three_stereo_samples.len() < 3 { panic!("Not enough stereo samples."); }
         let mut p = 0u16;
-        for stereo_sample in &self.last_three_stereo_sample {
-            p = (p ^ (stereo_sample[0] >> 2)) ^ (stereo_sample[1] >> 2);
+        for stereo_sample in &self.last_three_stereo_samples {
+            p = p ^ stereo_sample[0] ^ stereo_sample[1];
         }
         p
     }
 
-    fn get_p_in_s_value(&self) -> u16 {
-        if self.last_three_stereo_sample.len() < 3 { panic!("Not enough stereo samples."); }
-
-        let mut xor = 0u8;
-        for stereo_sample in &self.last_three_stereo_sample {
-            xor = xor ^ (stereo_sample[0] & 0x3) as u8 ^ (stereo_sample[1] & 0x3) as u8;
-        }
-        xor as u16
-    }
-
     pub fn submit_stereo_sample(&mut self, stereo_sample: [u16; 2]) -> Option<u128> {
         for sample in &stereo_sample { 
-            self.submit_16bit_sample_to_14bit_delayer(*sample);
-            self.submit_16bit_sample_to_2bit_delayer(*sample);
+            self.lines[self.current_line_input].feed(*sample);
             self.current_line_input += 1; 
         }
-        self.last_three_stereo_sample.push(stereo_sample);
+        self.last_three_stereo_samples.push(stereo_sample);
 
-        if self.last_three_stereo_sample.len() == 3 {
-            // We need to calculate an additional P CRC checksum for both 14 bit and 2bit lines
+        if self.last_three_stereo_samples.len() == 3 {
+            // We need to calculate an additional P CRC checksum
+            let p_value = self.get_p_value();
+            self.lines[self.current_line_input].feed(p_value); // P
 
-            self.submit_16bit_sample_to_14bit_delayer(self.get_p_value() << 2); // P
-            self.submit_16bit_sample_to_2bit_delayer(self.get_p_in_s_value()); // P for the 2 bit extensions in S
-
-            self.last_three_stereo_sample.clear();
+            self.last_three_stereo_samples.clear();
             self.current_line_input = 0;
 
             Some(self.get_current_line_data())

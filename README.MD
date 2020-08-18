@@ -3,13 +3,13 @@
 A realtime PCM encoder for the Raspberry Pi.
 
 This software allows you to output digital audio encoded as composite video which is compatible with the SONY PCM-F1 hadware PCM decoder.
+You can either supply a single wav file or an m3u playlist file with wav files to be played.
 
 ## Limitations (at the moment)
 - Only 44.1kHz Stereo 16 bit WAV files are supported as input.
 - Only PAL video is rendered. Every parameter is hardwired for this at the moment.
-- No playback controls, WAV files is being looped as long as you don't terminate the executable.
+- No playback controls, WAV files are being looped as long as you don't terminate the executable.
 - Dispmanx resources are not freed explicitly after termination (though it's working this way, it would be nicer to do so)
-- Encoding of the bitformat is done in series with the rendering (these two should be separated in the future); background activity can knock the app out of sync and some distrotion might be heard.
 - No tests :( Need to figure out how to run them in a cross-compiled environment. Yeah, I'm still learning Rust as I wrote this :)
 
 ## Requirements
@@ -19,7 +19,7 @@ This software allows you to output digital audio encoded as composite video whic
 
 ## Usage:
 
-    picm <wav_file_path>
+    picm [wav_file_path | m3u_file_path]
 
 ## Inspirations:
 - raspi-teletext
@@ -27,3 +27,4 @@ This software allows you to output digital audio encoded as composite video whic
 ## Thanks
 
 * Fagear and mihail2501 on FagearTechCorner Discord channel for providing extreme useful help/tools and had many patience for my silly problems with the format :)
+* The author of this project, for the Dispmanx setup examples: https://github.com/AndrewFromMelbourne/raspidmx

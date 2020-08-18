@@ -1,18 +1,18 @@
 mod display;
 mod timer;
 mod pcm;
+mod playlist;
 
 use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8, VSyncData};
 use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
-use thread_priority::*;
-use rb::*;
+use playlist::Playlist;
 
 use std::{thread, io, fs, sync::Arc};
-
 use hound;
-
 use clap::Clap;
+use thread_priority::*;
+use rb::*;
 
 const WIDTH: i32 = 138;
 const HEIGHT: i32 = 576 / 2;
@@ -32,7 +32,7 @@ const CONTROL_LINE_BASE: u128 = 0xCCCCCCCCCCCCCC000000000000000000u128;
 #[derive(Clap)]
 #[clap(name="PiCM", version = "0.1.0", author = "István Nagy <nistvan.86@gmail.com>")]
 struct Opts {
-    /// WAV file to be played.
+    /// .wav or .m3u file pointing to WAV files to be played.
     input: String,
 }
 
@@ -47,7 +47,7 @@ fn get_base_line() -> Vec<u8> {
     line
 }
 
-fn bits_to_line_data(bits: u128) -> Vec<u8> {
+fn bits_to_line_pixels(bits: u128) -> Vec<u8> {
     let mut data: Vec<u8> = Vec::with_capacity(128);
 
     let mut cursor = 1u128 << 127;
@@ -79,7 +79,7 @@ fn next_stereo_samples(wav_samples: &mut hound::WavIntoSamples<io::BufReader<fs:
     Some(result)
 }
 
-fn open_wave(file: &String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
+fn open_wave(file: String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i32> {
     let reader = hound::WavReader::open(file).unwrap();
     let spec = reader.spec();
     if spec.bits_per_sample != 16 || spec.sample_format != hound::SampleFormat::Int || spec.sample_rate != 44100 || spec.channels != 2 {
@@ -91,12 +91,17 @@ fn open_wave(file: &String) -> hound::WavIntoSamples<io::BufReader<fs::File>, i3
 fn main() {
     let opts: Opts = Opts::parse();
 
+    let mut playlist = if opts.input.to_ascii_lowercase().ends_with(".m3u") {
+        Playlist::new_from_m3u(opts.input.clone())
+    } else {
+        Playlist::new_with_single_item(opts.input.clone())
+    };
+
     let ring_buffer: SpscRb<u128> = SpscRb::new(RINGBUFFER_SIZE as usize);
     let (ring_buffer_producer, ring_buffer_consumer) = (ring_buffer.producer(), ring_buffer.consumer());
 
     thread::spawn(move || {
-        let mut wav_samples = open_wave(&opts.input);
-
+        let mut wav_samples = open_wave(playlist.next_file());
         let mut pcm = PCMEngine::new();
 
         let mut result: Vec<u128> = vec![];
@@ -104,7 +109,7 @@ fn main() {
         loop {
             let stereo_sample = next_stereo_samples(&mut wav_samples);
             let samples = if stereo_sample.is_none() {
-                wav_samples = open_wave(&opts.input); // Reopen we reached the end
+                wav_samples = open_wave(playlist.next_file()); // Move to next playlist item
                 next_stereo_samples(&mut wav_samples).unwrap()
             } else {
                 stereo_sample.unwrap()
@@ -113,7 +118,6 @@ fn main() {
             let line_data = pcm.submit_stereo_sample(samples);
 
             if line_data.is_some() {
-                //println!("Pushed to local buffer.");
                 result.push(line_data.unwrap());
             }
 
@@ -178,8 +182,8 @@ fn main() {
 
                 // Convert to line data if we are inside renderable region
                 if h < HEIGHT {
-                    let bits_as_line_data = bits_to_line_data(bits);
-                    paste(&mut line, 4, bits_as_line_data);
+                    let bits_as_pixel_data = bits_to_line_pixels(bits);
+                    paste(&mut line, 4, bits_as_pixel_data);
 
                     resources[next_resource].image.set_pixels_indexed(0, h, line);
                 }
