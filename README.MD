@@ -24,7 +24,7 @@ Watch it in action: https://www.youtube.com/watch?v=WRrcjgK-Pc8&feature=youtu.be
 - Tested with a Raspberry Pi Zero (non W model, but should work with that as well). Binary is compiled for armv6, so it will not work on other Pi models; though it should be as easy as modifying the compiler in the `.cargo/config` file and installing the necessary toolchain.
 - `sdtv_mode=2` is required in `config.txt`
 - Tested with Raspberry OS 10 without graphical frontend (console framebuffer mode). Probably will not work with any desktop running, because of the low level nature of accessing the GPU.
-- It's recommended to overclock the Pi in `config.txt` to reduce sync issues. Also minimize any background activity if you wan't the best precision. (even disconnect from network, play WAV files from SD card instead of USB stick, etc.)
+- It's recommended to overclock the Pi in `config.txt` to reduce sync issues. Also minimize any background activity if you want the best result. (even disconnect from network, play WAV files from SD card instead of USB stick, etc.) Though unfortunately the Vsync callback handler of the Pi is not perfect and sometimes cause tearing which corrupts the data, despite all my efforts so far.
 
 ## Usage:
 
