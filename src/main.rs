@@ -42,7 +42,7 @@ const WHITE: RGB8 = RGB8 { r: 255, g: 255, b: 255 };
 const DISPMANX_LAYER: i32 = 200;
 
 #[derive(Clap)]
-#[clap(name="PiCM", version = "0.1.1", author = "István Nagy <nistvan.86@gmail.com>")]
+#[clap(name="PiCM", version = "0.1.2", author = "István Nagy <nistvan.86@gmail.com>")]
 struct Opts {
     /// .wav or .m3u file pointing to WAV files to be played.
     input: String,
