@@ -111,9 +111,9 @@ impl PCMEngine {
         self.last_three_stereo_samples.push(stereo_sample);
 
         if self.last_three_stereo_samples.len() == 3 {
-            // We need to calculate an additional P CRC checksum
+            // We need to calculate an additional P word
             let p_value = self.get_p_value();
-            self.lines[self.current_line_input].feed(p_value); // P
+            self.lines[self.current_line_input].feed(p_value);
 
             self.last_three_stereo_samples.clear();
             self.current_line_input = 0;
