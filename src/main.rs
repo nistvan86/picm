@@ -19,19 +19,21 @@ const SCREEN_HEIGHT: i32 = 576;
 const LEFT_OFFSET: i32 = 14;
 const TOP_OFFSET: i32 = 1;
 
-const FULL_WIDTH: i32 = 137;
+const VISIBLE_PCM_FIELD_HEIGHT: i32 = SCREEN_HEIGHT / 2;
+const VISIBLE_PCM_DATA_FIELD_HEIGHT: i32 = VISIBLE_PCM_FIELD_HEIGHT - 1;
 
-const DATA_WIDTH: i32 = FULL_WIDTH - LINE_PREAMBLE_WIDTH - LINE_END_WHITE_REFERENCE_WIDTH;
-const DATA_FIELD_HEIGHT: i32 = SCREEN_HEIGHT / 2;
+const PCM_LINE_PREAMBLE_BYTES: &'static [u8] = &[1, 0, 1, 0];
+const PCM_LINE_PREAMBLE_WIDTH: i32 = PCM_LINE_PREAMBLE_BYTES.len() as i32;
+const PCM_LINE_END_WHITE_REFERENCE_BYTES: &'static [u8] = &[0, 2, 2, 2, 2];
+const PCM_LINE_END_WHITE_REFERENCE_WIDTH: i32 = PCM_LINE_END_WHITE_REFERENCE_BYTES.len() as i32;
 
-const TOTAL_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution, 295 lines in field (incl. CTL line)
-const TOTAL_DATA_LINES_IN_FIELD: i32 = TOTAL_LINES_IN_FIELD - 1;
-const RINGBUFFER_SIZE: i32 = TOTAL_DATA_LINES_IN_FIELD * 8; // 8 fields in advance
+const PCM_FULL_WIDTH: i32 = 137;
+const PCM_DATA_WIDTH: i32 = PCM_FULL_WIDTH - PCM_LINE_PREAMBLE_WIDTH - PCM_LINE_END_WHITE_REFERENCE_WIDTH;
 
-const LINE_PREAMBLE_BYTES: &'static [u8] = &[1, 0, 1, 0];
-const LINE_PREAMBLE_WIDTH: i32 = LINE_PREAMBLE_BYTES.len() as i32;
-const LINE_END_WHITE_REFERENCE_BYTES: &'static [u8] = &[0, 2, 2, 2, 2];
-const LINE_END_WHITE_REFERENCE_WIDTH: i32 = LINE_END_WHITE_REFERENCE_BYTES.len() as i32;
+const PCM_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution, 295 lines in field (incl. CTL line)
+const PCM_DATA_LINES_IN_FIELD: i32 = PCM_LINES_IN_FIELD - 1;
+
+const RINGBUFFER_SIZE: i32 = VISIBLE_PCM_DATA_FIELD_HEIGHT * PCM_DATA_WIDTH * 50 * 2; // 2 sec * 50 fields in advance
 
 const BLACK: RGB8 = RGB8 { r: 0, g: 0, b: 0};
 const GRAY: RGB8 = RGB8 { r: 153, g: 153, b: 153 };
@@ -54,9 +56,9 @@ fn paste(v: &mut Vec<u8>, x: usize, p: Vec<u8>) {
 }
 
 fn get_base_line() -> Vec<u8> {
-    let mut line = vec![0u8; FULL_WIDTH as usize];
-    paste(&mut line, 0, Vec::from(LINE_PREAMBLE_BYTES));
-    paste(&mut line, FULL_WIDTH as usize - LINE_END_WHITE_REFERENCE_BYTES.len(), Vec::from(LINE_END_WHITE_REFERENCE_BYTES));
+    let mut line = vec![0u8; PCM_FULL_WIDTH as usize];
+    paste(&mut line, 0, Vec::from(PCM_LINE_PREAMBLE_BYTES));
+    paste(&mut line, PCM_FULL_WIDTH as usize - PCM_LINE_END_WHITE_REFERENCE_BYTES.len(), Vec::from(PCM_LINE_END_WHITE_REFERENCE_BYTES));
     line
 }
 
@@ -101,14 +103,15 @@ fn main() {
         Playlist::new_with_single_item(opts.input.clone())
     };
 
-    let ring_buffer: SpscRb<u128> = SpscRb::new(RINGBUFFER_SIZE as usize);
+    let ring_buffer: SpscRb<u8> = SpscRb::new(RINGBUFFER_SIZE as usize);
     let (ring_buffer_producer, ring_buffer_consumer) = (ring_buffer.producer(), ring_buffer.consumer());
 
     thread::spawn(move || {
         let mut wav_samples = open_wave(playlist.next_file());
         let mut pcm = PCMEngine::new();
 
-        let mut result: Vec<u128> = vec![];
+        let mut current_line = 0;
+        let mut line_pixel_bytes = [0u8; PCM_DATA_WIDTH as usize];
 
         loop {
             let stereo_sample = next_stereo_samples(&mut wav_samples);
@@ -119,15 +122,16 @@ fn main() {
                 stereo_sample.unwrap()
             };
 
-            let line_data = pcm.submit_stereo_sample(samples);
-
-            if line_data.is_some() {
-                result.push(line_data.unwrap());
-            }
-
-            if result.len() == TOTAL_DATA_LINES_IN_FIELD as usize {
-                ring_buffer_producer.write_blocking(&result);
-                result.clear();
+            if let Some(line_data) = pcm.submit_stereo_sample(samples) {
+                if current_line < VISIBLE_PCM_DATA_FIELD_HEIGHT {
+                    bits_to_pixels(line_data, &mut line_pixel_bytes);
+                    ring_buffer_producer.write_blocking(&line_pixel_bytes);
+                }
+                if current_line == PCM_DATA_LINES_IN_FIELD - 1 {
+                    current_line = 0;
+                } else {
+                    current_line += 1;
+                }
             }
         }
     });
@@ -145,43 +149,41 @@ fn main() {
         let mut palette = Palette::from_colors(vec![BLACK, GRAY, WHITE]);
 
         // Synchronization frame
-        let mut sync_frame_resource = ImageResource::from_image(Image::new(ImageType::_8BPP, FULL_WIDTH, 1));
+        let mut sync_frame_resource = ImageResource::from_image(Image::new(ImageType::_8BPP, PCM_FULL_WIDTH, 1));
         sync_frame_resource.set_palette(&mut palette);
         let base_line = get_base_line();
         sync_frame_resource.image.set_pixel_bytes(0, 0, &base_line);
         sync_frame_resource.update();
 
-        let frame_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: SCREEN_WIDTH - LEFT_OFFSET, height: (DATA_FIELD_HEIGHT * 2) };
+        let frame_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: SCREEN_WIDTH - LEFT_OFFSET, height: (VISIBLE_PCM_FIELD_HEIGHT * 2) };
         update.create_element_from_image_resource(DISPMANX_LAYER, frame_rect, &sync_frame_resource);
 
         // Data front and back buffer image resource
         let mut data_resources: Vec<ImageResource> = Vec::new();
         for _ in 0..2 {
-            let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, DATA_WIDTH, DATA_FIELD_HEIGHT));
+            let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, PCM_DATA_WIDTH, VISIBLE_PCM_FIELD_HEIGHT));
             resource.set_palette(&mut palette);
             resource.update();
             data_resources.push(resource);
         }
 
-        let physical_pixel_width = (SCREEN_WIDTH - LEFT_OFFSET) as f32 / FULL_WIDTH as f32;
-        let data_physical_left_offset = (LEFT_OFFSET as f32 + physical_pixel_width * LINE_PREAMBLE_WIDTH as f32).round() as i32;
-        let data_physical_width = (physical_pixel_width * DATA_WIDTH as f32).round() as i32;
+        let physical_pixel_width = (SCREEN_WIDTH - LEFT_OFFSET) as f32 / PCM_FULL_WIDTH as f32;
+        let data_physical_left_offset = (LEFT_OFFSET as f32 + physical_pixel_width * PCM_LINE_PREAMBLE_WIDTH as f32).round() as i32;
+        let data_physical_width = (physical_pixel_width * PCM_DATA_WIDTH as f32).round() as i32;
 
-        let data_rect = Rect { x: data_physical_left_offset, y: TOP_OFFSET, width: data_physical_width, height: (DATA_FIELD_HEIGHT * 2) };
+        let data_rect = Rect { x: data_physical_left_offset, y: TOP_OFFSET, width: data_physical_width, height: (VISIBLE_PCM_FIELD_HEIGHT * 2) };
         let data_element = update.create_element_from_image_resource(DISPMANX_LAYER + 1, data_rect, &data_resources[0]);
         update.submit_sync();
 
         let mut field_timer = if opts.render_times { Some(AvgPerformanceTimer::new(50)) } else { None };
 
         let mut next_resource = 0;
-        let mut next_field_data = [0u128; TOTAL_DATA_LINES_IN_FIELD as usize];
+        let mut next_field_data = [0u8; PCM_DATA_WIDTH as usize];
 
         // CTL, last 4 bits: no copyright, P-correction, no Q-correction (16bit mode), no pre-emph
         let ctl_line = pcm::add_crc_to_data(0xCCCCCCCCCCCCCC000000000000000000u128 | (0b0011 << 16));
-        let mut ctl_pixel_bytes = [0u8; DATA_WIDTH as usize];
+        let mut ctl_pixel_bytes = [0u8; PCM_DATA_WIDTH as usize];
         bits_to_pixels(ctl_line, &mut ctl_pixel_bytes);
-
-        let mut data_pixel_bytes = [0u8; DATA_WIDTH as usize];
 
         loop {
             thread::park(); // VSync handler wakes us up
@@ -191,14 +193,12 @@ fn main() {
 
             next_resource = if next_resource == 1 { 0 } else { 1 };
 
-            ring_buffer_consumer.read_blocking(&mut next_field_data);
-
-            for h in 0..DATA_FIELD_HEIGHT {
+            for h in 0..VISIBLE_PCM_FIELD_HEIGHT {
                 if h == 0 {
                     data_resources[next_resource].image.set_pixel_bytes(0, h, &Vec::from(ctl_pixel_bytes));
                 } else {
-                    bits_to_pixels(next_field_data[(h-1) as usize], &mut data_pixel_bytes);
-                    data_resources[next_resource].image.set_pixel_bytes(0, h, &Vec::from(data_pixel_bytes));
+                    ring_buffer_consumer.read_blocking(&mut next_field_data);
+                    data_resources[next_resource].image.set_pixel_bytes(0, h, &Vec::from(next_field_data));
                 }
             }
 
