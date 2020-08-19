@@ -3,6 +3,7 @@
 A realtime PCM encoder for the Raspberry Pi.
 
 This software allows you to output digital audio encoded as composite video which is compatible with the SONY PCM-F1's video format.
+
 Note: not tested with actual hardware yet, probably needs the `tvctl` command from the `raspi-teletext` project to shift the top of the picture to the VBI area to be detected.
 
 You can either supply a single wav file or an m3u playlist file with wav files to be played.
