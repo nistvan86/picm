@@ -3,7 +3,7 @@ mod timer;
 mod pcm;
 mod playlist;
 
-use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8/*, VSyncData*/};
+use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8};
 use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
 use playlist::Playlist;
