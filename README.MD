@@ -15,7 +15,7 @@ Watch it in action: https://www.youtube.com/watch?v=WRrcjgK-Pc8&feature=youtu.be
 - Only PAL video is rendered. Every parameter is hardwired for this at the moment.
 - Only renders 576 lines (offscreen 590); the format can still keep up and correct the missing lines, but only in ideal conditions (haven't tried dubbing it to VHS and playing it back from there). Would be nice to figure out how to increase the Raspberry's composite output height to let it render more lines from framebuffer, but it's unlikely.
 - No playback controls, files are being looped as long as you don't terminate the executable.
-- m3u support is very minimalistis (can't handle absolute paths or empty lines, oops). In a folder of files use `ls *.wav >playlist.m3u` for best result.
+- m3u support is very minimalistic (can't handle absolute paths or empty lines, oops). In a folder of files use `ls *.wav >playlist.m3u` for best result.
 - Dispmanx resources are not freed explicitly after termination (though it's working this way, it would be nicer to do so)
 - No tests (need to figure out how to run them in a cross-compiled environment)
 - Haven't tested compilation on actual device, probably needs tuning of toolchain in `./cargo/config`.
