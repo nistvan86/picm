@@ -1,6 +1,6 @@
 [package]
 name = "picm"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["István Nagy <nistvan.86@gmail.com>"]
 edition = "2018"
 

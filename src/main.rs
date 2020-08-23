@@ -59,7 +59,7 @@ impl PCMMode {
 }
 
 #[derive(Clap)]
-#[clap(name="PiCM", version = "0.1.2", author = "István Nagy <nistvan.86@gmail.com>")]
+#[clap(name="PiCM", version = "0.1.3", author = "István Nagy <nistvan.86@gmail.com>")]
 struct Opts {
     /// .wav or .m3u file pointing to WAV files to be played.
     input: String,
