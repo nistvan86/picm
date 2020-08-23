@@ -14,13 +14,8 @@ use clap::Clap;
 use thread_priority::*;
 use rb::*;
 
-const SCREEN_WIDTH: i32 = 720;
-const SCREEN_HEIGHT: i32 = 576;
 const LEFT_OFFSET: i32 = 14;
 const TOP_OFFSET: i32 = 1;
-
-const VISIBLE_PCM_FIELD_HEIGHT: i32 = SCREEN_HEIGHT / 2;
-const VISIBLE_PCM_DATA_FIELD_HEIGHT: i32 = VISIBLE_PCM_FIELD_HEIGHT - 1;
 
 const PCM_LINE_PREAMBLE_BYTES: &'static [u8] = &[1, 0, 1, 0];
 const PCM_LINE_PREAMBLE_WIDTH: i32 = PCM_LINE_PREAMBLE_BYTES.len() as i32;
@@ -30,16 +25,38 @@ const PCM_LINE_END_WHITE_REFERENCE_WIDTH: i32 = PCM_LINE_END_WHITE_REFERENCE_BYT
 const PCM_FULL_WIDTH: i32 = 137;
 const PCM_DATA_WIDTH: i32 = PCM_FULL_WIDTH - PCM_LINE_PREAMBLE_WIDTH - PCM_LINE_END_WHITE_REFERENCE_WIDTH;
 
-const PCM_LINES_IN_FIELD: i32 = 295; // PAL 590 line PCM resolution, 295 lines in field (incl. CTL line)
-const PCM_DATA_LINES_IN_FIELD: i32 = PCM_LINES_IN_FIELD - 1;
-
-const RINGBUFFER_SIZE: i32 = VISIBLE_PCM_DATA_FIELD_HEIGHT * PCM_DATA_WIDTH * 50 * 2; // 2 sec * 50 fields in advance
-
 const BLACK: RGB8 = RGB8 { r: 0, g: 0, b: 0};
 const GRAY: RGB8 = RGB8 { r: 153, g: 153, b: 153 };
 const WHITE: RGB8 = RGB8 { r: 255, g: 255, b: 255 };
 
 const DISPMANX_LAYER: i32 = 200;
+
+#[derive(Copy, Clone)]
+struct PCMMode {
+    screen_width: i32,
+    screen_height: i32,
+    field_rate: i32,
+
+    visible_pcm_field_height: i32,
+    visible_pcm_data_field_height: i32,
+    pcm_data_lines_in_field: i32,
+}
+
+impl PCMMode {
+    fn new(screen_width: i32, screen_height: i32, field_rate: i32, pcm_data_lines_in_field: i32) -> Self {
+        let visible_pcm_field_height = screen_height / 2;
+
+        PCMMode {
+            screen_width: screen_width,
+            screen_height: screen_height,
+            field_rate: field_rate,
+
+            visible_pcm_field_height: visible_pcm_field_height,
+            visible_pcm_data_field_height: visible_pcm_field_height - 1,
+            pcm_data_lines_in_field: pcm_data_lines_in_field
+        }
+    }
+}
 
 #[derive(Clap)]
 #[clap(name="PiCM", version = "0.1.2", author = "István Nagy <nistvan.86@gmail.com>")]
@@ -97,13 +114,37 @@ fn bits_to_pixels(bits: u128, pixel_bytes: &mut [u8; 128]) {
 fn main() {
     let opts: Opts = Opts::parse();
 
+    let display = Arc::new(Display::init(0));
+
+    // Try to figure out the PCM mode from current resolution
+    let resolution = display.get_resolution();
+
+    let modes: Vec<PCMMode> = Vec::from([
+        PCMMode::new(720, 576, 50, 294), // PAL
+        PCMMode::new(720, 480, 60, 245) // NTSC
+    ]);
+
+    let mut compatible_mode: Option<PCMMode> = None;
+
+    for current_mode in modes {
+        if resolution.width == current_mode.screen_width && resolution.height == current_mode.screen_height {
+            compatible_mode = Some(current_mode);
+            break;
+        }
+    }
+
+    if compatible_mode.is_none() {
+        panic!("Can't found a PCM mode for the current resolution: {}x{}", resolution.width, resolution.height);
+    }
+    let mode = compatible_mode.unwrap();
+
     let mut playlist = if opts.input.to_ascii_lowercase().ends_with(".m3u") {
         Playlist::new_from_m3u(opts.input.clone())
     } else {
         Playlist::new_with_single_item(opts.input.clone())
     };
 
-    let ring_buffer: SpscRb<u8> = SpscRb::new(RINGBUFFER_SIZE as usize);
+    let ring_buffer: SpscRb<u8> = SpscRb::new((mode.visible_pcm_data_field_height * PCM_DATA_WIDTH * mode.field_rate * 2) as usize);
     let (ring_buffer_producer, ring_buffer_consumer) = (ring_buffer.producer(), ring_buffer.consumer());
 
     thread::spawn(move || {
@@ -123,11 +164,11 @@ fn main() {
             };
 
             if let Some(line_data) = pcm.submit_stereo_sample(samples) {
-                if current_line < VISIBLE_PCM_DATA_FIELD_HEIGHT {
+                if current_line < mode.visible_pcm_data_field_height {
                     bits_to_pixels(line_data, &mut line_pixel_bytes);
                     ring_buffer_producer.write_blocking(&line_pixel_bytes);
                 }
-                if current_line == PCM_DATA_LINES_IN_FIELD - 1 {
+                if current_line == mode.pcm_data_lines_in_field - 1 {
                     current_line = 0;
                 } else {
                     current_line += 1;
@@ -136,7 +177,6 @@ fn main() {
         }
     });
 
-    let display = Arc::new(Display::init(0));
     display.set_bilinear_filtering(false);
 
     let display_clone = display.clone();
@@ -155,23 +195,23 @@ fn main() {
         sync_frame_resource.image.set_pixel_bytes(0, 0, &base_line);
         sync_frame_resource.update();
 
-        let frame_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: SCREEN_WIDTH - LEFT_OFFSET, height: (VISIBLE_PCM_FIELD_HEIGHT * 2) };
+        let frame_rect = Rect { x: LEFT_OFFSET, y: TOP_OFFSET, width: mode.screen_width - LEFT_OFFSET, height: (mode.visible_pcm_field_height * 2) };
         update.create_element_from_image_resource(DISPMANX_LAYER, frame_rect, &sync_frame_resource);
 
         // Data front and back buffer image resource
         let mut data_resources: Vec<ImageResource> = Vec::new();
         for _ in 0..2 {
-            let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, PCM_DATA_WIDTH, VISIBLE_PCM_FIELD_HEIGHT));
+            let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, PCM_DATA_WIDTH, mode.visible_pcm_field_height));
             resource.set_palette(&mut palette);
             resource.update();
             data_resources.push(resource);
         }
 
-        let physical_pixel_width = (SCREEN_WIDTH - LEFT_OFFSET) as f32 / PCM_FULL_WIDTH as f32;
+        let physical_pixel_width = (mode.screen_width - LEFT_OFFSET) as f32 / PCM_FULL_WIDTH as f32;
         let data_physical_left_offset = (LEFT_OFFSET as f32 + physical_pixel_width * PCM_LINE_PREAMBLE_WIDTH as f32).round() as i32;
         let data_physical_width = (physical_pixel_width * PCM_DATA_WIDTH as f32).round() as i32;
 
-        let data_rect = Rect { x: data_physical_left_offset, y: TOP_OFFSET, width: data_physical_width, height: (VISIBLE_PCM_FIELD_HEIGHT * 2) };
+        let data_rect = Rect { x: data_physical_left_offset, y: TOP_OFFSET, width: data_physical_width, height: (mode.visible_pcm_field_height * 2) };
         let data_element = update.create_element_from_image_resource(DISPMANX_LAYER + 1, data_rect, &data_resources[0]);
         update.submit_sync();
 
@@ -193,7 +233,7 @@ fn main() {
 
             next_resource = if next_resource == 1 { 0 } else { 1 };
 
-            for h in 0..VISIBLE_PCM_FIELD_HEIGHT {
+            for h in 0..mode.visible_pcm_field_height {
                 if h == 0 {
                     data_resources[next_resource].image.set_pixel_bytes(0, h, &Vec::from(ctl_pixel_bytes));
                 } else {

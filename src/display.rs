@@ -1,4 +1,4 @@
-use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect};
+use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect, display::InputFormat};
 use std::ffi::{c_void, CString};
 use std::ptr;
 use std::thread;
@@ -10,6 +10,12 @@ const NO_ALPHA: dispmanx::VCAlpha = dispmanx::VCAlpha { flags: dispmanx::FlagsAl
 #[link(name = "bcm_host")]
 extern {
     fn vc_gencmd_send(format: *const c_char, ...) -> i32;
+}
+
+#[derive(Copy, Clone)]
+pub struct DisplayResolution {
+    pub width: i32,
+    pub height: i32
 }
 
 #[derive(Copy, Clone)]
@@ -71,6 +77,12 @@ impl<'d> Display {
                 vc_gencmd_send(get_c_string("%s").as_ptr(), get_c_string("scaling_kernel 0 0 0 0 0 0 0 0 1 1 1 1 255 255 255 255 255 255 255 255 1 1 1 1 0 0 0 0 0 0 0 0 1").as_ptr());
             }
         }
+    }
+
+    pub fn get_resolution(&'d self) -> DisplayResolution {
+        let mut info = dispmanx::Modeinfo { width: 0, height: 0, transform: dispmanx::Transform::NO_ROTATE, input_format: InputFormat::INVALID };
+        dispmanx::display_get_info(self.handle, &mut info);
+        DisplayResolution { width: info.width, height: info.height }
     }
 
     pub fn start_update(&'d self, priority: i32) -> Update<'d> {
