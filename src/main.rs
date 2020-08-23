@@ -3,7 +3,7 @@ mod timer;
 mod pcm;
 mod playlist;
 
-use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8, VSyncData};
+use display::{Display, Image, Rect, ImageType, ImageResource, Palette, RGB8/*, VSyncData*/};
 use pcm::PCMEngine;
 use timer::AvgPerformanceTimer;
 use playlist::Playlist;
@@ -13,6 +13,8 @@ use hound;
 use clap::Clap;
 use thread_priority::*;
 use rb::*;
+
+use futures::executor::block_on;
 
 const SCREEN_WIDTH: i32 = 720;
 const SCREEN_HEIGHT: i32 = 576;
@@ -40,6 +42,7 @@ const GRAY: RGB8 = RGB8 { r: 153, g: 153, b: 153 };
 const WHITE: RGB8 = RGB8 { r: 255, g: 255, b: 255 };
 
 const DISPMANX_LAYER: i32 = 200;
+const DISPMANX_BUFFERS: usize = 3;
 
 #[derive(Clap)]
 #[clap(name="PiCM", version = "0.1.2", author = "István Nagy <nistvan.86@gmail.com>")]
@@ -139,8 +142,6 @@ fn main() {
     let display = Arc::new(Display::init(0));
     display.set_bilinear_filtering(false);
 
-    let display_clone = display.clone();
-
     let draw_thread_handle = thread::spawn(move || {
         set_current_thread_priority(ThreadPriority::Max).expect("Failed to set thread priority");
 
@@ -160,7 +161,7 @@ fn main() {
 
         // Data front and back buffer image resource
         let mut data_resources: Vec<ImageResource> = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..DISPMANX_BUFFERS {
             let mut resource = ImageResource::from_image(Image::new(ImageType::_8BPP, PCM_DATA_WIDTH, VISIBLE_PCM_FIELD_HEIGHT));
             resource.set_palette(&mut palette);
             resource.update();
@@ -186,12 +187,11 @@ fn main() {
         bits_to_pixels(ctl_line, &mut ctl_pixel_bytes);
 
         loop {
-            thread::park(); // VSync handler wakes us up
             if let Some(timer) = &mut field_timer { timer.begin(); }
 
             let update = display.start_update(10);
 
-            next_resource = if next_resource == 1 { 0 } else { 1 };
+            next_resource = if next_resource == DISPMANX_BUFFERS - 1 { 0 } else { next_resource + 1 };
 
             for h in 0..VISIBLE_PCM_FIELD_HEIGHT {
                 if h == 0 {
@@ -204,13 +204,12 @@ fn main() {
 
             data_resources[next_resource].update();
             update.replace_element_source(&data_element, &data_resources[next_resource]);
-            update.submit();
 
             if let Some(timer) = &mut field_timer { timer.end(); }
+
+            block_on(update.submit_future());
         }
     });
 
-    let mut vsync_data = VSyncData { draw_thread: &draw_thread_handle.thread() };
-    display_clone.start_vsync_handler(&mut vsync_data);
     draw_thread_handle.join().unwrap();
 }

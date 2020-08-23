@@ -1,8 +1,11 @@
 use videocore::{bcm_host, dispmanx, image::ImageType as VCImageType, image::Rect as VCRect};
 use std::ffi::{c_void, CString};
 use std::ptr;
-use std::thread;
 use std::os::raw::c_char;
+
+use std::future::Future;
+use std::task::{Context, Poll, Waker};
+use std::pin::Pin;
 
 const NO_ALPHA: dispmanx::VCAlpha = dispmanx::VCAlpha { flags: dispmanx::FlagsAlpha::FIXED_ALL_PIXELS, opacity: 255, mask: 0 };
 
@@ -38,17 +41,6 @@ pub struct Display {
     handle: dispmanx::DisplayHandle
 }
 
-pub struct VSyncData<'t> {
-    pub draw_thread: &'t thread::Thread
-}
-
-extern "C" fn vsync_callback(_: dispmanx::UpdateHandle, arg: *mut c_void) {
-    let data: &mut VSyncData = unsafe { &mut *(arg as *mut VSyncData) };
-    data.draw_thread.unpark();
-}
-
-extern "C" fn null_callback(_: dispmanx::UpdateHandle, _: *mut c_void) { }
-
 fn get_c_string(text: &'static str) -> CString {
     CString::new(text).expect("Failed to get CString")
 }
@@ -82,13 +74,50 @@ impl<'d> Display {
         }
     }
 
-    pub fn start_vsync_handler(&self, vsync_data: &mut VSyncData) {
-        dispmanx::vsync_callback(self.handle, vsync_callback, vsync_data as *mut _ as *mut c_void);
-    }
 }
 
 pub struct Element {
     handle: dispmanx::ElementHandle
+}
+
+extern "C" fn complete_future(_: dispmanx::UpdateHandle, arg: *mut c_void) {
+    let data: &mut PendingUpdate = unsafe { &mut *(arg as *mut PendingUpdate) };
+    data.completed = true;
+    data.waker.take().unwrap().wake();
+}
+
+pub struct PendingUpdate {
+    update: dispmanx::UpdateHandle,
+    completed: bool,
+    waker: Option<Waker>,
+}
+
+impl PendingUpdate {
+    fn new(update: dispmanx::UpdateHandle) -> Self {
+        PendingUpdate {
+            update: update,
+            completed: false,
+            waker: None
+        }
+    }
+}
+
+impl Future for PendingUpdate {
+    type Output=bool;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        if self.completed {
+            Poll::Ready(self.completed)
+        } else {
+            if self.waker.is_none() {
+                let self_mut = self.get_mut();
+                self_mut.waker = Some(cx.waker().clone());
+
+                dispmanx::update_submit(self_mut.update, complete_future, self_mut as *mut _ as *mut c_void);
+            }
+            Poll::Pending
+        }
+    }
 }
 
 pub struct Update<'d> {
@@ -108,13 +137,14 @@ impl<'d> Update<'d> {
         dispmanx::element_change_source(self.handle, element.handle, image_resource.resource);
     }
 
+    pub fn submit_future(&self) -> PendingUpdate {
+        PendingUpdate::new(self.handle)
+    }
+
     pub fn submit_sync(&self) {
         dispmanx::update_submit_sync(self.handle);
     }
 
-    pub fn submit(&self) {
-        dispmanx::update_submit(self.handle, null_callback, ptr::null_mut());
-    }
 }
 
 #[derive(Copy, Clone)]
